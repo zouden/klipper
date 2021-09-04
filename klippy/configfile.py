@@ -116,6 +116,14 @@ class ConfigWrapper:
     def get_prefix_options(self, prefix):
         return [o for o in self.fileconfig.options(self.section)
                 if o.startswith(prefix)]
+    def deprecate(self, option, msg=None):
+        if not self.fileconfig.has_option(self.section, option):
+            return
+        if msg is None:
+            msg = "Option '%s' in section '%s' is deprecated." % (option,
+                                                                  self.section)
+        pconfig = self.printer.lookup_object("configfile")
+        pconfig.deprecate(self.section, option, msg)
 
 AUTOSAVE_HEADER = """
 #*# <---------------------- SAVE_CONFIG ---------------------->
@@ -127,8 +135,10 @@ class PrinterConfig:
     def __init__(self, printer):
         self.printer = printer
         self.autosave = None
+        self.deprecated = {}
         self.status_raw_config = {}
         self.status_settings = {}
+        self.status_warnings = None
         self.save_config_pending = False
         gcode = self.printer.lookup_object('gcode')
         gcode.register_command("SAVE_CONFIG", self.cmd_SAVE_CONFIG,
@@ -289,6 +299,8 @@ class PrinterConfig:
                  "======================="]
         self.printer.set_rollover_info("config", "\n".join(lines))
     # Status reporting
+    def deprecate(self, section, option, msg):
+        self.deprecated[(section, option)] = msg
     def _build_status(self, config):
         self.status_raw_config.clear()
         for section in config.get_prefix_sections(''):
@@ -298,9 +310,16 @@ class PrinterConfig:
         self.status_settings = {}
         for (section, option), value in config.access_tracking.items():
             self.status_settings.setdefault(section, {})[option] = value
+        self.status_warnings = None
+        if self.deprecated:
+            warn = sorted(list(self.deprecated.values()))
+            warn.append("Deprecated options will result in an error in a future"
+                        " Klipper update!")
+            self.status_warnings = "\n".join(warn)
     def get_status(self, eventtime):
         return {'config': self.status_raw_config,
                 'settings': self.status_settings,
+                'warnings': self.status_warnings,
                 'save_config_pending': self.save_config_pending}
     # Autosave functions
     def set(self, section, option, value):
