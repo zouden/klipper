@@ -21,6 +21,7 @@ SOURCE_FILES = [
     'pollreactor.c', 'msgblock.c', 'trdispatch.c',
     'kin_cartesian.c', 'kin_corexy.c', 'kin_corexz.c', 'kin_delta.c',
     'kin_polar.c', 'kin_rotary_delta.c', 'kin_winch.c', 'kin_extruder.c',
+    'kin_fivebar.c',
     'kin_shaper.c',
 ]
 DEST_LIB = "c_helper.so"
@@ -131,6 +132,12 @@ defs_kin_winch = """
         , double anchor_y, double anchor_z);
 """
 
+defs_kin_fivebar = """
+    struct stepper_kinematics *fivebar_stepper_alloc(
+        char arm, double inner_arm_length,
+        double outer_arm_length, double inner_arms_distance);
+"""
+
 defs_kin_extruder = """
     struct stepper_kinematics *extruder_stepper_alloc(void);
     void extruder_set_smooth_time(struct stepper_kinematics *sk
@@ -216,7 +223,7 @@ defs_all = [
     defs_itersolve, defs_trapq, defs_trdispatch,
     defs_kin_cartesian, defs_kin_corexy, defs_kin_corexz, defs_kin_delta,
     defs_kin_polar, defs_kin_rotary_delta, defs_kin_winch, defs_kin_extruder,
-    defs_kin_shaper,
+    defs_kin_shaper, defs_kin_fivebar,
 ]
 
 # Update filenames to an absolute path
