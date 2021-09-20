@@ -24,7 +24,8 @@ class FiveBar:
                                             units_in_radians=True)
         rail_arm_right = stepper.PrinterRail(stepper_configs[1],
                                              units_in_radians=True)
-
+        rail_arm_left.safe_home_angle = stepper_configs[0].getfloat('safe_home_angle')
+        rail_arm_right.safe_home_angle = stepper_configs[1].getfloat('safe_home_angle')
         rail_z = stepper.LookupMultiRail(config.getsection('stepper_z'))
         rail_z.setup_itersolve('cartesian_stepper_alloc', 'z')
 
@@ -59,6 +60,7 @@ class FiveBar:
             'max_z_accel', max_accel, above=0., maxval=max_accel)
         self.limit_z = (1.0, -1.0)
         self.homedXY = False
+        self.ishoming = False
 
         # Homing trickery fake cartesial kinematic
         self.printer = config.get_printer()
@@ -68,7 +70,7 @@ class FiveBar:
         self.cartesian_kinematics_R = ffi_main.gc(
             ffi_lib.cartesian_stepper_alloc('y'), ffi_lib.free)
 
-        logging.info("5-Bar driven %.2f %.2f %.2f %.2f %.2f",
+        logging.info("Fivebar driven %.2f %.2f %.2f %.2f %.2f",
                      self.left_inner_arm, self.left_outer_arm,
                      self.right_inner_arm, self.right_outer_arm,
                      self.inner_distance)
@@ -80,10 +82,10 @@ class FiveBar:
         return [s for rail in self.rails[:2] for s in rail.get_steppers()]
    
     # Geometry functions
-    def _distance(self, x0, y0, x1, y1):
-        dx = x1-x0
-        dy = y1-y0
-        return math.sqrt(dx*dx + dy*dy)
+    # def _distance(self, x0, y0, x1, y1):
+    #     dx = x1-x0
+    #     dy = y1-y0
+    #     return math.sqrt(dx*dx + dy*dy)
 
     def _calculate_line(self, x0, y0, theta, length):
         # Find the endpoints of a line given its length and angle
@@ -91,15 +93,15 @@ class FiveBar:
         y1 = y0 + math.sin(theta) * length
         return x1, y1
 
-    def _triangle_side(self, a, b, C):
-        # Finds the side of a triangle given 2 sides and the angle between them
-        return math.sqrt((a*a) + (b*b) - (2*a*b*math.cos(C)))
+    # def _triangle_side(self, a, b, C):
+    #     # Finds the side of a triangle given 2 sides and the angle between them
+    #     return math.sqrt((a*a) + (b*b) - (2*a*b*math.cos(C)))
 
-    def _triangle_angle(self, a, b, c):
-        # Find the angle of the corner opposite to side c
-        # (cosine rule)
-        cosC = (a*a + b*b - c*c) / ( 2*a*b)
-        return math.acos(cosC)
+    # def _triangle_angle(self, a, b, c):
+    #     # Find the angle of the corner opposite to side c
+    #     # (cosine rule)
+    #     cosC = (a*a + b*b - c*c) / ( 2*a*b)
+    #     return math.acos(cosC)
 
     def _get_intersections(self, circle0, r0, circle1, r1):
         # https://stackoverflow.com/questions/55816902/finding-the-intersection-of-two-circles
@@ -133,7 +135,7 @@ class FiveBar:
 
     def _angles_to_position(self, left_angle, right_angle):
         # Forward kinematics.
-        # Assume the left stepper is at the origin
+        # Assume the left stepper is at the origin, and both steppers are at y=0
         x_left, y_left = 0,0
         x_right, y_right = self.inner_distance,0
 
@@ -148,6 +150,7 @@ class FiveBar:
 
     def _position_to_angles(self, x, y):
         # Inverse kinematics.
+        # Assume the left stepper is at the origin, and both steppers are at y=0
         x_left, y_left = 0,0
         x_right, y_right = self.inner_distance,0
         # find the position of the left elbow. It is at an intersection of 2 circles, 
@@ -159,6 +162,8 @@ class FiveBar:
         # otherwise the valid candidate is the left-most one (lowest X)
         left_elbow = left_candidates[0] if left_candidates[0][0] < left_candidates[1][0] else left_candidates[1]
         left_angle = math.atan2(left_elbow[1]-y_left, left_elbow[0]-x_left)
+        # we don't want negative thetas on the left stepper.
+        if left_angle<0: left_angle+=math.pi * 2
         # now do the right side
         right_candidates = self._get_intersections((x_right, y_right), self.right_inner_arm, 
                                                   (x,y), self.right_outer_arm)
@@ -171,7 +176,7 @@ class FiveBar:
         return left_angle, right_angle
 
     def calc_position(self, stepper_positions):
-        # Motor pos -> caretesian coordinates
+        # Motor pos -> caretesian coordinates (forward kinematics)
         pos = [stepper_positions[rail.get_name()] for rail in self.rails]
         left_angle  = pos[0]
         right_angle = pos[1]
@@ -194,17 +199,23 @@ class FiveBar:
         self.limit_z = (1.0, -1.0)
     def home(self, homing_state):
         axes = homing_state.get_axes()
-        logging.info("5be home %s", axes)
+        logging.info("Fivebar home %s", axes)
         if 0 in axes or 1 in axes: #  XY
-            # Home left and right at the same time
+            # Home left then right!
+            # disable steppers - important
+            stepper_enable = self.printer.lookup_object('stepper_enable')
+            stepper_enable.motor_off() # disables all steppers. They will be enabled by the homing process.
+
             self.homedXY = False
             homing_state.set_axes([0, 1])
             rails = [self.rails[0], self.rails[1]]
             l_endstop = rails[0].get_homing_info().position_endstop
             l_min, l_max = rails[0].get_range()
+            l_safe = rails[0].safe_home_angle
 
             r_endstop = rails[1].get_homing_info().position_endstop
             r_min, r_max = rails[1].get_range()
+            r_safe = rails[1].safe_home_angle
 
             # Swap to linear kinematics
             toolhead = self.printer.lookup_object('toolhead')
@@ -218,25 +229,53 @@ class FiveBar:
                             for stepper, kinematic in zip(steppers, kinematics)]
 
             try:
-                homepos  = [l_endstop, r_endstop, None, None]
-                hil = rails[0].get_homing_info()
-                if hil.positive_dir:
-                    forcepos = [0, 0, None, None]
+                self.ishoming = True
+                # homepos  = [l_endstop, r_endstop, None, None]
+                homepos = [l_endstop, None, None]
+                hi0 = rails[0].get_homing_info()
+                if hi0.positive_dir:
+                    forcepos = [0, None, None]
                 else:
-                    forcepos = [l_max, r_max, None, None]
-                logging.info("Fivebar home LR %s %s %s", rails, forcepos, homepos);
+                    forcepos = [l_max, None, None] 
+                
+                # home first rail (left)
+                # the homing function alters kinematics class to think rail is at forcepos.
+                # the stepper then moves towards homepos until endstop is triggered
+                logging.info("Fivebar home L %s %s", forcepos, homepos)
+                homing_state.home_rails([rails[0]], forcepos, homepos)
+                # this then sets the toolhead position to homepos 
+                # The stepper now thinks its at forcepos (eg 0)
+                # We need to move stepper L towards safe_homing_angle
+                logging.info("Fivebar moving L to safe home %s", rails[0].safe_home_angle)
+                toolhead.manual_move([rails[0].safe_home_angle, None, None], hi0.speed)
+                
 
-                homing_state.home_rails(rails, forcepos, homepos)
+                # now home R
+                logging.info("Fivebar homing R now")
+                homepos = [None, r_endstop, None]
+                hi0 = rails[0].get_homing_info()
+                if hi0.positive_dir:
+                    forcepos = [None, 0, None]
+                else:
+                    forcepos = [None, r_max, None]
+                homing_state.home_rails([rails[1]], forcepos, homepos)
+                logging.info("Fivebar moving R to safe home %s", rails[1].safe_home_angle)
+                toolhead.manual_move([None, rails[1].safe_home_angle, None], hi0.speed)
+                toolhead.flush_step_generation()
 
+                self.ishoming = False
+                # restore kinematics
+                logging.info("Fivebar: restoring kinematics")
                 for stepper, prev_sk in zip(steppers, prev_sks):
                     stepper.set_stepper_kinematics(prev_sk)
 
                 [x,y] = self._angles_to_position(
-                    rails[0].get_homing_info().position_endstop,
-                    rails[1].get_homing_info().position_endstop)
+                    rails[0].safe_home_angle,
+                    rails[1].safe_home_angle)
+                
                 toolhead.set_position( [x, y, 0, 0], (0, 1))
                 toolhead.flush_step_generation()
-                #self.homedXY = True
+                self.homedXY = True
                 logging.info("Homed LR done")
 
             except Exception as e:
@@ -251,8 +290,7 @@ class FiveBar:
             rail = self.rails[2]
             position_min, position_max = rail.get_range()
             hi = rail.get_homing_info()
-            homepos = [None, None, None]
-            homepos[2] = hi.position_endstop
+            homepos = [None, None, hi.position_endstop]
             forcepos = list(homepos)
             if hi.positive_dir:
                 forcepos[2] -= 1.5 * (hi.position_endstop - position_min)
@@ -268,13 +306,14 @@ class FiveBar:
         self.limit_z = (1.0, -1.0)
 
     def check_move(self, move):
+        #during homing state, the kinematics are not valid anyway
+        if self.ishoming: 
+            return True 
         end_pos = move.end_pos
-
         # XY moves
         if move.axes_d[0] or move.axes_d[1]:
             xpos, ypos = end_pos[:2]
-
-            if not self.homedXY:
+            if not (self.ishoming or self.homedXY):
                 raise move.move_error("Must home axis first")
 
             # Check that coordinate is in front
