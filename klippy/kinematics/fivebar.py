@@ -70,7 +70,7 @@ class FiveBar:
         self.cartesian_kinematics_R = ffi_main.gc(
             ffi_lib.cartesian_stepper_alloc('y'), ffi_lib.free)
 
-        logging.info("Fivebar driven %.2f %.2f %.2f %.2f %.2f",
+        logging.info("Fivebar setup %.2f %.2f %.2f %.2f %.2f",
                      self.left_inner_arm, self.left_outer_arm,
                      self.right_inner_arm, self.right_outer_arm,
                      self.inner_distance)
@@ -149,7 +149,7 @@ class FiveBar:
         return endpoint
 
     def _position_to_angles(self, x, y):
-        # Inverse kinematics.
+        # Inverse kinematics. Returns None if no valid solution.
         # Assume the left stepper is at the origin, and both steppers are at y=0
         x_left, y_left = 0,0
         x_right, y_right = self.inner_distance,0
@@ -184,7 +184,7 @@ class FiveBar:
         return [x, y, pos[2]]
 
     def set_position(self, newpos, homing_axes):
-        logging.info("5be set_position %s    %s", newpos, homing_axes)
+        logging.info("Fivebar setting position to %s %s", newpos, homing_axes)
         for i, rail in enumerate(self.rails):
             rail.set_position(newpos)
         if 0 in homing_axes and 1 in homing_axes:
@@ -233,8 +233,9 @@ class FiveBar:
                 # homepos  = [l_endstop, r_endstop, None, None]
                 homepos = [l_endstop, None, None]
                 hi0 = rails[0].get_homing_info()
+                # is the endstop within 25% of the position_max, or 25% of the position_min?
                 if hi0.positive_dir:
-                    forcepos = [0, None, None]
+                    forcepos = [l_min, None, None]
                 else:
                     forcepos = [l_max, None, None] 
                 
@@ -253,11 +254,12 @@ class FiveBar:
                 # now home R
                 logging.info("Fivebar homing R now")
                 homepos = [None, r_endstop, None]
-                hi0 = rails[0].get_homing_info()
-                if hi0.positive_dir:
-                    forcepos = [None, 0, None]
-                else:
+                hi1 = rails[1].get_homing_info()
+                if hi1.positive_dir: #should be false
+                    forcepos = [None, r_min, None]
+                else: 
                     forcepos = [None, r_max, None]
+                # we should be moving from positive to negative
                 homing_state.home_rails([rails[1]], forcepos, homepos)
                 logging.info("Fivebar moving R to safe home %s", rails[1].safe_home_angle)
                 toolhead.manual_move([None, rails[1].safe_home_angle, None], hi0.speed)
@@ -265,7 +267,7 @@ class FiveBar:
 
                 self.ishoming = False
                 # restore kinematics
-                logging.info("Fivebar: restoring kinematics")
+                logging.info("Fivebar restoring kinematics")
                 for stepper, prev_sk in zip(steppers, prev_sks):
                     stepper.set_stepper_kinematics(prev_sk)
 
@@ -284,9 +286,7 @@ class FiveBar:
                 toolhead.flush_step_generation()
                 raise
 
-        logging.info("5be homeZ %s", axes)
         if 2 in axes: # Z
-            logging.info("5be home Z %s", axes)
             rail = self.rails[2]
             position_min, position_max = rail.get_range()
             hi = rail.get_homing_info()
@@ -297,8 +297,7 @@ class FiveBar:
             else:
                 forcepos[2] += 1.5 * (position_max - hi.position_endstop)
             # Perform homing
-            logging.info("5be home Z %s %s %s",
-                         [rail], forcepos, homepos);
+            logging.info("Fivebar homing Z %s %s", forcepos, homepos);
             homing_state.home_rails([rail], forcepos, homepos)
 
     def _motor_off(self, print_time):
@@ -313,6 +312,7 @@ class FiveBar:
         # XY moves
         if move.axes_d[0] or move.axes_d[1]:
             xpos, ypos = end_pos[:2]
+            logging.info("Checking move to %s %s", xpos, ypos)
             if not (self.ishoming or self.homedXY):
                 raise move.move_error("Must home axis first")
 
@@ -322,26 +322,22 @@ class FiveBar:
 
             # Make sure distance from left and right attachement point is
             # no further away that inner+outer
-            [left_d, right_d] = self._position_distances(xpos, ypos)
-            if left_d > self.left_inner_arm+self.left_outer_arm or right_d > self.right_inner_arm+self.right_outer_arm:
+            target_angles = self._position_to_angles(xpos, ypos)
+            if not target_angles:
                 raise move.move_error(
                     "Attempted move outside reachable area (arm length)")
 
-            # Check elbow angle limits
-            [left_a, right_a, left_d, right_d] = \
-                self._position_to_angles(xpos, ypos)
-            #logging.info(
-            #    "check XY %.8f, %.8f  LR a %.8f, %.8f  LR d %.2f, %.2f   ",
-            #    xpos, ypos, left_a, right_a, left_d, right_d)
             left_min_a, left_max_a = self.rails[0].get_range()
-            if left_a < left_min_a or left_a > left_max_a:
+            if not (left_min_a <= target_angles[0] <= left_max_a):
                 raise move.move_error(
-                    "Attempted move left arm outside angle limits")
+                    "Attempted move left arm outside angle limits: %.2f (%.2f %.2f)" %
+                    (target_angles[0], left_min_a, left_max_a))
 
             right_min_a, right_max_a = self.rails[1].get_range()
-            if right_a < right_min_a or right_a > right_max_a:
+            if not (right_min_a <= target_angles[1] <= right_max_a):
                 raise move.move_error(
-                    "Attempted move right arm outside angle limits")
+                    "Attempted move right arm outside angle limits: %.2f (%.2f %.2f)" %
+                    (target_angles[1], right_min_a, right_max_a))
 
             # TODO: Speed limits
 
