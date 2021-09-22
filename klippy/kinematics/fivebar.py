@@ -1,8 +1,7 @@
 # Five Bar linkage kinematics
- 
+# Copyright 2020, 2021 
 # Pontus Borg <glpontus@gmail.com>
 # Eirinn Mackay <eirinn.mackay@gmail.com>
-
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
 # TODO:
@@ -16,6 +15,19 @@ import stepper, mathutil, chelper
 
 class FiveBar:
     def __init__(self, toolhead, config):
+        self.inner_distance = config.getfloat('inner_distance', above=0.)
+        self.inner_arm_length = config.getfloat('inner_arm_length', above=0.)
+        self.outer_arm_length = config.getfloat('outer_arm_length', above=0.)
+        self.toolhead_attached_to = config.getchoice('toolhead_attached_to', 
+                                                    choices={'left':0, 'right':1},
+                                                    default='left')
+        self.toolhead_offset_angle = config.getfloat('toolhead_offset_angle', default=0)
+        self.toolhead_to_elbow_length = config.getfloat('toolhead_to_elbow_length', default=0)
+        if self.toolhead_to_elbow_length>0:
+            self.toolhead_is_offset = True
+        else:
+            self.toolhead_is_offset = False
+            self.toolhead_to_elbow_length = self.outer_arm_length
 
         stepper_configs = [config.getsection('stepper_left'),
                            config.getsection('stepper_right')]
@@ -29,19 +41,18 @@ class FiveBar:
         rail_z = stepper.LookupMultiRail(config.getsection('stepper_z'))
         rail_z.setup_itersolve('cartesian_stepper_alloc', 'z')
 
-        self.inner_distance = config.getfloat('inner_distance', above=0.)
 
-        self.left_inner_arm = stepper_configs[0].getfloat('inner_arm_length', above=0.)
-        self.left_outer_arm = stepper_configs[0].getfloat('outer_arm_length', above=0.)
+        # self.inner_arm_length = stepper_configs[0].getfloat('inner_arm_length', above=0.)
+        # self.outer_arm_length = stepper_configs[0].getfloat('outer_arm_length', above=0.)
         rail_arm_left.setup_itersolve('fivebar_stepper_alloc', 'l',
-                                      self.left_inner_arm, self.left_outer_arm,
+                                      self.inner_arm_length, self.outer_arm_length,
                                       self.inner_distance)
 
-        self.right_inner_arm = stepper_configs[1].getfloat('inner_arm_length', above=0.)
-        self.right_outer_arm = stepper_configs[1].getfloat('outer_arm_length', above=0.)
+        # self.inner_arm_length = stepper_configs[1].getfloat('inner_arm_length', above=0.)
+        # self.outer_arm_length = stepper_configs[1].getfloat('outer_arm_length', above=0.)
         rail_arm_right.setup_itersolve(
             'fivebar_stepper_alloc', 'r',
-             self.right_inner_arm, self.right_outer_arm,
+             self.inner_arm_length, self.outer_arm_length,
              self.inner_distance)
 
         self.rails = [rail_arm_left, rail_arm_right, rail_z]
@@ -70,10 +81,13 @@ class FiveBar:
         self.cartesian_kinematics_R = ffi_main.gc(
             ffi_lib.cartesian_stepper_alloc('y'), ffi_lib.free)
 
-        logging.info("Fivebar setup %.2f %.2f %.2f %.2f %.2f",
-                     self.left_inner_arm, self.left_outer_arm,
-                     self.right_inner_arm, self.right_outer_arm,
+        logging.info("Fivebar setup %.2f %.2f %.2f",
+                     self.inner_arm_length, self.outer_arm_length,
                      self.inner_distance)
+        logging.info("Toolhead is offset: %s (%.2f rads, %.2f mm)",
+                     self.toolhead_is_offset, self.toolhead_offset_angle,
+                     self.toolhead_to_elbow_length)
+
 
     def get_steppers(self):
         return [s for rail in self.rails for s in rail.get_steppers()]
@@ -140,43 +154,93 @@ class FiveBar:
         x_right, y_right = self.inner_distance,0
 
         # First find the coords of the elbow joints 
-        left_elbow_pos = self._calculate_line(x_left, y_left, left_angle, self.left_inner_arm)
-        right_elbow_pos = self._calculate_line(x_right, y_right, right_angle, self.right_inner_arm)
+        left_elbow_pos = self._calculate_line(x_left, y_left, left_angle, self.inner_arm_length)
+        right_elbow_pos = self._calculate_line(x_right, y_right, right_angle, self.inner_arm_length)
         # now find the intersection of two circles centred around these elbows. There will be 2 candidates.
-        candidates = self._get_intersections(left_elbow_pos, self.left_outer_arm, right_elbow_pos, self.right_outer_arm)
+        candidates = self._get_intersections(left_elbow_pos, self.outer_arm_length, right_elbow_pos, self.outer_arm_length)
         # in this working mode (working mode 2) the endpoint is the one with the most positive Y position
         endpoint = candidates[0] if candidates[0][1] > candidates[1][1] else candidates[1]
-        return endpoint
+        # now we've found the endpoint. But is the toolhead offset?
+        logging.info("Endpoint calculated to be at %.2f, %.2f", endpoint[0], endpoint[1])
+        logging.debug("FK left elbow %.2f rad (%.2f, %.2f)", left_angle, left_elbow_pos[0], left_elbow_pos[1])
+        logging.debug("FK right elbow %.2f rad (%.2f, %.2f)", right_angle, right_elbow_pos[0], right_elbow_pos[1])
+        if self.toolhead_is_offset:
+            toolhead_elbow = left_elbow_pos if self.toolhead_attached_to==0 else right_elbow_pos
+            # what's the angle between this elbow and the endpoint?
+            endpoint_bearing = math.atan2(endpoint[1]-toolhead_elbow[1], endpoint[0]-toolhead_elbow[0])
+            # now we just add the known offset angle and compute the coords of the toolhead.
+            toolhead_pos = self._calculate_line(toolhead_elbow[0], toolhead_elbow[1], 
+                                                endpoint_bearing + self.toolhead_offset_angle,
+                                                self.toolhead_to_elbow_length)
+            logging.debug("Toolhead calculated to be at %s", toolhead_pos)
+            return toolhead_pos
+        else:
+            return endpoint
+
+    def _find_elbow(self, left_or_right, endX, endY, dist2):
+        # Helper function for inverse kinematics. Finds the elbow and the bearing of the line between it and the end XY
+        startY = 0
+        startX = 0 if left_or_right == 'left' else self.inner_distance
+        # intersect two circles
+        dist1 = self.inner_arm_length
+        candidates = self._get_intersections((startX, startY), dist1,
+                                            (endX, endY), dist2)
+        if not candidates:
+            return None, None
+        if left_or_right == 'left':
+            elbow = candidates[0] if candidates[0][0] < candidates[1][0] else candidates[1]
+        else:
+            elbow = candidates[0] if candidates[0][0] > candidates[1][0] else candidates[1]
+        bearing = math.atan2(endY-elbow[1], endX-elbow[0])
+        return elbow, bearing
+
 
     def _position_to_angles(self, x, y):
         # Inverse kinematics. Returns None if no valid solution.
         # Assume the left stepper is at the origin, and both steppers are at y=0
         x_left, y_left = 0,0
         x_right, y_right = self.inner_distance,0
-        # find the position of the left elbow. It is at an intersection of 2 circles, 
-        # the endpoint and the left stepper
-        left_candidates = self._get_intersections((x_left, y_left), self.left_inner_arm, 
-                                                  (x,y), self.left_outer_arm)
-        if not left_candidates:
-            return None #no valid angle!
-        # otherwise the valid candidate is the left-most one (lowest X)
-        left_elbow = left_candidates[0] if left_candidates[0][0] < left_candidates[1][0] else left_candidates[1]
+        # is the toolhead offset from the endpoint? If so, we need to find the endpoint first.
+        
+        if self.toolhead_attached_to == 0: # attached to left arm, so find it first
+            first_elbow, bearing = self._find_elbow('left', x, y, self.toolhead_to_elbow_length)
+            if not first_elbow: return None 
+            # now find the endpoint, using the offset from the toolhead
+            endpoint = self._calculate_line(first_elbow[0], first_elbow[1],
+                                            bearing - self.toolhead_offset_angle, self.outer_arm_length)
+            second_elbow, bearing = self._find_elbow('right', endpoint[0], endpoint[1], self.outer_arm_length)
+            left_elbow, right_elbow = first_elbow, second_elbow
+        else:
+            first_elbow, bearing = self._find_elbow('right', x, y, self.toolhead_to_elbow_length)
+            if not first_elbow: return None 
+            # now find the endpoint, using the offset from the toolhead
+            endpoint = self._calculate_line(first_elbow[0], first_elbow[1],
+                                            bearing - self.toolhead_offset_angle, self.outer_arm_length)
+            second_elbow, bearing = self._find_elbow('left', endpoint[0], endpoint[1], self.outer_arm_length)
+            right_elbow, left_elbow  = first_elbow, second_elbow
+            
+
+        # get the angles for these elbows
         left_angle = math.atan2(left_elbow[1]-y_left, left_elbow[0]-x_left)
         # we don't want negative thetas on the left stepper.
         if left_angle<0: left_angle+=math.pi * 2
+        
         # now do the right side
-        right_candidates = self._get_intersections((x_right, y_right), self.right_inner_arm, 
-                                                  (x,y), self.right_outer_arm)
-        if not right_candidates:
-            return None #no valid angle!
-        # otherwise the valid candidate is the right-most one (highest X)
-        right_elbow = right_candidates[0] if right_candidates[0][0] > right_candidates[1][0] else right_candidates[1]
+        # right_candidates = self._get_intersections((x_right, y_right), self.inner_arm_length, 
+        #                                           (x,y), self.outer_arm_length)
+        # if not right_candidates:
+        #     return None #no valid angle!
+        # # otherwise the valid candidate is the right-most one (highest X)
+        # right_elbow = right_candidates[0] if right_candidates[0][0] > right_candidates[1][0] else right_candidates[1]
         right_angle = math.atan2(right_elbow[1]-y_right, right_elbow[0]-x_right)
+        logging.debug("IK toolhead (%.2f, %.2f) endpoint (%.2f, %.2f)", x, y, endpoint[0], endpoint[1])
+        logging.debug("IK left elbow %.2f rad (%.2f, %.2f)", left_angle, left_elbow[0], left_elbow[1])
+        logging.debug("IK right elbow %.2f rad (%.2f, %.2f)", right_angle, right_elbow[0], right_elbow[1])
 
         return left_angle, right_angle
 
     def calc_position(self, stepper_positions):
-        # Motor pos -> caretesian coordinates (forward kinematics)
+        # Motor pos -> cartesian coordinates (forward kinematics)
         pos = [stepper_positions[rail.get_name()] for rail in self.rails]
         left_angle  = pos[0]
         right_angle = pos[1]
@@ -255,7 +319,7 @@ class FiveBar:
                 logging.info("Fivebar homing R now")
                 homepos = [None, r_endstop, None]
                 hi1 = rails[1].get_homing_info()
-                if hi1.positive_dir: #should be false
+                if hi1.positive_dir: # in my robot this is false
                     forcepos = [None, r_min, None]
                 else: 
                     forcepos = [None, r_max, None]
