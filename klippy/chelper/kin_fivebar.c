@@ -12,13 +12,23 @@
 #include "compiler.h" // __visible
 #include "itersolve.h" // struct stepper_kinematics
 #include "trapq.h" // move_get_coord
+#include "pyhelper.h"
 
 struct fivebar_stepper {
     struct stepper_kinematics sk;
     double inner_arm_length;
     double outer_arm_length;
-    double mount_x_pos;
+    double inner_arms_distance;
     char arm;
+    int toolhead_is_offset;
+    double toolhead_to_elbow_length;
+    double toolhead_offset_angle;
+    char toolhead_attached_to;
+};
+
+struct Point{
+    double x;
+    double y;
 };
 
 // static inline double sqr(double a) { return a*a; };
@@ -102,51 +112,128 @@ static int intersection(double result[],
     return 1;
 }
 
+struct Point _calculate_line(double x0, double y0, double theta, double length){
+    struct Point outpoint;
+    outpoint.x = x0 + cos(theta) * length;
+    outpoint.y = y0 + sin(theta) * length;
+    return outpoint;
+    }
+
+
+// Helper function for IK
+static struct Point _find_elbow(char arm, double startX, double endX, double endY, 
+                        double armlen1, double armlen2)
+{
+    // Helper function for inverse kinematics. Finds the elbow and the bearing of the line between it and the end XY
+    double startY = 0;
+    // intersect two circles
+    double candidates[4] = {0,0,0,0};
+    struct Point elbow;
+    int ok = intersection(candidates, startX, startY, armlen1,
+                             endX, endY, armlen2);
+    if(!ok){
+        errorf("IK fail: no elbows found: start(%.2f %.2f) len(%.2f) end(%.2f %.2f) len2(%.2f)", 
+                             startX, startY, armlen1,
+                             endX, endY, armlen2);
+    }
+    if(arm == 'l'){
+        if(candidates[0] < candidates[2]){ //first candidate is left-most
+            elbow.x = candidates[0]; elbow.y = candidates[1];
+        } else {
+            elbow.x = candidates[2]; elbow.y = candidates[3];
+        }
+    } else {
+        if(candidates[0] > candidates[2]){ //first candidate is right-most
+            elbow.x = candidates[0]; elbow.y = candidates[1];
+        } else {
+            elbow.x = candidates[2]; elbow.y = candidates[3];
+        }
+    }
+    return elbow;
+}
 
 // Inverse kinematics
-static double
-fivebar_stepper_calc_position(
-    struct stepper_kinematics *sk,
-    struct move *m,
-    double move_time)
+static double fivebar_stepper_calc_position(
+                                struct stepper_kinematics *sk,
+                                struct move *m,
+                                double move_time) 
 {
     struct fivebar_stepper *fs =
         container_of(sk, struct fivebar_stepper, sk);
     struct coord c = move_get_coord(m, move_time);
     //find the coords of the elbow
-    double candidates[4];
-    double elbow_x, elbow_y;
-    intersection(candidates, fs->mount_x_pos, 0, fs->inner_arm_length,
-                             c.x, c.y, fs->outer_arm_length);
-    if(fs->arm == 'l'){
-        if(candidates[0] < candidates[2]){ //first candidate is left-most
-            elbow_x = candidates[0]; elbow_y = candidates[1];
-        } else {
-            elbow_x = candidates[2]; elbow_y = candidates[3];
-        }
-    } else {
-        if(candidates[0] > candidates[2]){ //first candidate is right-most
-            elbow_x = candidates[0]; elbow_y = candidates[1];
-        } else {
-            elbow_x = candidates[2]; elbow_y = candidates[3];
-        }
+    // double left_elbow_x = 0, left_elbow_y = 0;
+    // double right_elbow_x = 0, right_elbow_y = 0;
+    struct Point endpoint;
+    struct Point left_elbow = {0,0};
+    struct Point right_elbow = {0,0};
 
-    }   
-    //find the angle to the elbow
-    double angle = atan2(elbow_y - 0, elbow_x - fs->mount_x_pos);
-    //if the angle is negative, we need to bring it back into range (left side only)
-    if(angle<0 && fs->arm=='l'){
-        angle+=M_PI*2;
-    }                     
+    if(fs->toolhead_attached_to != 'l' && fs->toolhead_attached_to != 'r'){
+        errorf("Fivebar kinematics misconfigured");
+    }
+
+    if(fs->toolhead_attached_to == 'l') { 
+        //toolhead on left arm. Find it first
+        left_elbow = _find_elbow('l', 0, c.x, c.y,
+                    fs->inner_arm_length, fs->toolhead_to_elbow_length);
+        // is there an offset? Then we need to find the endpoint
+        if(fs->toolhead_is_offset){
+            //find the bearing of this upper arm
+            double bearing = atan2(c.y-left_elbow.y, c.x-left_elbow.x);
+            //it's offset from this arm, so we need to find the endpoint
+            //by subtracting the known theta offset
+            endpoint = _calculate_line(left_elbow.x, left_elbow.y,
+                            bearing - fs->toolhead_offset_angle,
+                            fs->outer_arm_length);
+            //now we know where the arm ends. Use this as the target for the right stepper.
+        } else {
+            endpoint.x = c.x;
+            endpoint.y = c.y;
+        }
+        right_elbow = _find_elbow('r', fs->inner_arms_distance, endpoint.x, endpoint.y,
+                fs->inner_arm_length, fs->outer_arm_length);
+    } else { 
+        //toolhead on right arm. Find it first
+        right_elbow = _find_elbow('r', fs->inner_arms_distance, c.x, c.y,
+                    fs->inner_arm_length, fs->toolhead_to_elbow_length);
+        // is there an offset? Then we need to find the endpoint
+        if(fs->toolhead_is_offset){
+            //find the bearing of this upper arm
+            double bearing = atan2(c.y-right_elbow.y, c.x-right_elbow.x);
+            //it's offset from this arm, so we need to find the endpoint
+            //by subtracting the known theta offset (note, right side offsets should be negative)
+            endpoint = _calculate_line(right_elbow.x, right_elbow.y,
+                            bearing - fs->toolhead_offset_angle,
+                            fs->outer_arm_length);
+            //now we know where the arm ends. Use this as the target for the left stepper.
+        }else{
+            endpoint.x = c.x;
+            endpoint.y = c.y;
+        }
+        _find_elbow('l', fs->inner_arms_distance, endpoint.x, endpoint.y,
+                fs->inner_arm_length, fs->outer_arm_length);
+    }
+    // now we have both elbow positions.
+    double angle;
+    if(fs->arm=='l'){
+        angle = atan2(left_elbow.y - 0, left_elbow.x - 0);
+        if(angle<0) angle+=M_PI*2;
+    }else{
+        angle = atan2(right_elbow.y - 0, right_elbow.x - fs->inner_arms_distance);
+    }
     return angle;
 }
 
 
 struct stepper_kinematics * __visible
 fivebar_stepper_alloc(char arm,
-                           double inner_arm_length,
-                           double outer_arm_length,
-                           double inner_arms_distance){
+                        double inner_arm_length,
+                        double outer_arm_length,
+                        double inner_arms_distance,
+                        int toolhead_is_offset,
+                        double toolhead_to_elbow_length,
+                        double toolhead_offset_angle,
+                        char toolhead_attached_to){
 
     struct fivebar_stepper *fs = malloc(sizeof(*fs));
     memset(fs, 0, sizeof(*fs));
@@ -155,13 +242,11 @@ fivebar_stepper_alloc(char arm,
     fs->inner_arm_length = inner_arm_length;
     fs->outer_arm_length = outer_arm_length;
     fs->arm = arm;
-    //the left arm is mounted at X=0. The right arm is offset by the inner distance.
-    //the Y position for both steppers is 0.
-    if (arm == 'l') {
-        fs->mount_x_pos = 0;
-    } else if (arm == 'r') {
-        fs->mount_x_pos = inner_arms_distance;
-    }
+    fs->inner_arms_distance = inner_arms_distance;
+    fs->toolhead_attached_to = toolhead_attached_to;
+    fs->toolhead_is_offset = toolhead_is_offset;
+    fs->toolhead_offset_angle = toolhead_offset_angle;
+    fs->toolhead_to_elbow_length = toolhead_to_elbow_length;
     fs->sk.active_flags = AF_X | AF_Y;
     return &fs->sk;
 }

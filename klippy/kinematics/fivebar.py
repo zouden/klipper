@@ -19,7 +19,7 @@ class FiveBar:
         self.inner_arm_length = config.getfloat('inner_arm_length', above=0.)
         self.outer_arm_length = config.getfloat('outer_arm_length', above=0.)
         self.toolhead_attached_to = config.getchoice('toolhead_attached_to', 
-                                                    choices={'left':0, 'right':1},
+                                                    choices={'left':'left', 'right':'left'},
                                                     default='left')
         self.toolhead_offset_angle = config.getfloat('toolhead_offset_angle', default=0)
         self.toolhead_to_elbow_length = config.getfloat('toolhead_to_elbow_length', default=0)
@@ -41,19 +41,23 @@ class FiveBar:
         rail_z = stepper.LookupMultiRail(config.getsection('stepper_z'))
         rail_z.setup_itersolve('cartesian_stepper_alloc', 'z')
 
-
-        # self.inner_arm_length = stepper_configs[0].getfloat('inner_arm_length', above=0.)
-        # self.outer_arm_length = stepper_configs[0].getfloat('outer_arm_length', above=0.)
+        toolhead_attached_char = 'l' if self.toolhead_attached_to=='left' else 'r'
         rail_arm_left.setup_itersolve('fivebar_stepper_alloc', 'l',
                                       self.inner_arm_length, self.outer_arm_length,
-                                      self.inner_distance)
+                                      self.inner_distance,
+                                      self.toolhead_is_offset,
+                                      self.toolhead_to_elbow_length,
+                                      self.toolhead_offset_angle,
+                                      toolhead_attached_char)
 
-        # self.inner_arm_length = stepper_configs[1].getfloat('inner_arm_length', above=0.)
-        # self.outer_arm_length = stepper_configs[1].getfloat('outer_arm_length', above=0.)
         rail_arm_right.setup_itersolve(
-            'fivebar_stepper_alloc', 'r',
-             self.inner_arm_length, self.outer_arm_length,
-             self.inner_distance)
+                                    'fivebar_stepper_alloc', 'r',
+                                    self.inner_arm_length, self.outer_arm_length,
+                                    self.inner_distance,
+                                    self.toolhead_is_offset,
+                                    self.toolhead_to_elbow_length,
+                                    self.toolhead_offset_angle,
+                                    toolhead_attached_char)
 
         self.rails = [rail_arm_left, rail_arm_right, rail_z]
 
@@ -165,7 +169,7 @@ class FiveBar:
         logging.debug("FK left elbow %.2f rad (%.2f, %.2f)", left_angle, left_elbow_pos[0], left_elbow_pos[1])
         logging.debug("FK right elbow %.2f rad (%.2f, %.2f)", right_angle, right_elbow_pos[0], right_elbow_pos[1])
         if self.toolhead_is_offset:
-            toolhead_elbow = left_elbow_pos if self.toolhead_attached_to==0 else right_elbow_pos
+            toolhead_elbow = left_elbow_pos if self.toolhead_attached_to=='left' else right_elbow_pos
             # what's the angle between this elbow and the endpoint?
             endpoint_bearing = math.atan2(endpoint[1]-toolhead_elbow[1], endpoint[0]-toolhead_elbow[0])
             # now we just add the known offset angle and compute the coords of the toolhead.
@@ -202,7 +206,7 @@ class FiveBar:
         x_right, y_right = self.inner_distance,0
         # is the toolhead offset from the endpoint? If so, we need to find the endpoint first.
         
-        if self.toolhead_attached_to == 0: # attached to left arm, so find it first
+        if self.toolhead_attached_to == 'left': # attached to left arm, so find it first
             first_elbow, bearing = self._find_elbow('left', x, y, self.toolhead_to_elbow_length)
             if not first_elbow: return None 
             # now find the endpoint, using the offset from the toolhead

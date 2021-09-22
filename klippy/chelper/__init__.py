@@ -134,8 +134,14 @@ defs_kin_winch = """
 
 defs_kin_fivebar = """
     struct stepper_kinematics *fivebar_stepper_alloc(
-        char arm, double inner_arm_length,
-        double outer_arm_length, double inner_arms_distance);
+        char arm,
+        double inner_arm_length,
+        double outer_arm_length,
+        double inner_arms_distance,
+        int toolhead_is_offset,
+        double toolhead_to_elbow_length,
+        double toolhead_offset_angle,
+        char toolhead_attached_to);
 """
 
 defs_kin_extruder = """
