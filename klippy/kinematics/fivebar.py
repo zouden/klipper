@@ -176,7 +176,7 @@ class FiveBar:
             toolhead_pos = self._calculate_line(toolhead_elbow[0], toolhead_elbow[1], 
                                                 endpoint_bearing + self.toolhead_offset_angle,
                                                 self.toolhead_to_elbow_length)
-            logging.debug("Toolhead calculated to be at %s", toolhead_pos)
+            logging.debug("Toolhead calculated to be at %.2f, %.2f", toolhead_pos[0], toolhead_pos[1])
             return toolhead_pos
         else:
             return endpoint
@@ -208,7 +208,7 @@ class FiveBar:
         
         if self.toolhead_attached_to == 'left': # attached to left arm, so find it first
             first_elbow, bearing = self._find_elbow('left', x, y, self.toolhead_to_elbow_length)
-            if not first_elbow: return None 
+            if not first_elbow: return None
             # now find the endpoint, using the offset from the toolhead
             endpoint = self._calculate_line(first_elbow[0], first_elbow[1],
                                             bearing - self.toolhead_offset_angle, self.outer_arm_length)
@@ -216,13 +216,15 @@ class FiveBar:
             left_elbow, right_elbow = first_elbow, second_elbow
         else:
             first_elbow, bearing = self._find_elbow('right', x, y, self.toolhead_to_elbow_length)
-            if not first_elbow: return None 
+            if not first_elbow: return None
             # now find the endpoint, using the offset from the toolhead
             endpoint = self._calculate_line(first_elbow[0], first_elbow[1],
                                             bearing - self.toolhead_offset_angle, self.outer_arm_length)
             second_elbow, bearing = self._find_elbow('left', endpoint[0], endpoint[1], self.outer_arm_length)
             right_elbow, left_elbow  = first_elbow, second_elbow
-            
+
+
+        if not second_elbow: return None 
 
         # get the angles for these elbows
         left_angle = math.atan2(left_elbow[1]-y_left, left_elbow[0]-x_left)
@@ -380,7 +382,7 @@ class FiveBar:
         # XY moves
         if move.axes_d[0] or move.axes_d[1]:
             xpos, ypos = end_pos[:2]
-            logging.info("Checking move to %s %s", xpos, ypos)
+            logging.debug("Checking move to %s %s", xpos, ypos)
             if not (self.ishoming or self.homedXY):
                 raise move.move_error("Must home axis first")
 

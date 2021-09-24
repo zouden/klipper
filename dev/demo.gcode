@@ -1,7 +1,8 @@
 ;take PHIL on a tour
-;G28
-;G1 Z11
-G1 x6 y195 f7800
-G1 x66.5 y193
-G1 x62.5 y90
-G1 x3.5 y95
+G28
+G1 Z12
+
+G1 X-9 Y99 ;well A1
+G1 X-9 Y198 ;well A12
+G1 X54 Y198 ;well H12
+G1 X54 Y99 ;well H1

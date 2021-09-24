@@ -123,14 +123,14 @@ class GCodeMove:
                     else:
                         # value relative to base coordinate position
                         self.last_position[pos] = v + self.base_position[pos]
-            if 'E' in params:
-                v = float(params['E']) * self.extrude_factor
-                if not self.absolute_coord or not self.absolute_extrude:
-                    # value relative to position of last move
-                    self.last_position[3] += v
-                else:
-                    # value relative to base coordinate position
-                    self.last_position[3] = v + self.base_position[3]
+            # if 'E' in params:
+            #     v = float(params['E']) * self.extrude_factor
+            #     if not self.absolute_coord or not self.absolute_extrude:
+            #         # value relative to position of last move
+            #         self.last_position[3] += v
+            #     else:
+            #         # value relative to base coordinate position
+            #         self.last_position[3] = v + self.base_position[3]
             if 'F' in params:
                 gcode_speed = float(params['F'])
                 if gcode_speed <= 0.:
