@@ -28,7 +28,7 @@ while True:
     wellname = input("Go to well: ")
     coords = wellindex_to_mm(*wellname_to_index(wellname))
     print('Moving to', coords)
-    gcode = "G1 X%.2f Y%.2f F10000" % coords
+    gcode = "G1 X%.2f Y%.2f F8000" % coords
     response = printer.send_gcode(gcode)
     if not response:
         print("Printer must be homed first")
