@@ -274,7 +274,9 @@ class FiveBar:
             # Home left then right!
             # disable steppers - important
             stepper_enable = self.printer.lookup_object('stepper_enable')
-            stepper_enable.motor_off() # disables all steppers. They will be enabled by the homing process.
+            # stepper_enable.motor_off() # disables all steppers. They will be enabled by the homing process.
+            # Disable stepper 1 (right stepper) while we home the left stepper.
+            stepper_enable.motor_debug_enable("stepper_right", False)
 
             self.homedXY = False
             homing_state.set_axes([0, 1])
@@ -290,6 +292,9 @@ class FiveBar:
             # Swap to linear kinematics
             toolhead = self.printer.lookup_object('toolhead')
             toolhead.flush_step_generation()
+            # take note of the Z position, so we can restore it later.
+            old_position = toolhead.get_position()
+            logging.info("Fivebar old Z position was %s", old_position[2])
 
             steppers = self.get_arm_steppers()
             kinematics = [self.cartesian_kinematics_L,
@@ -309,6 +314,8 @@ class FiveBar:
                 else:
                     forcepos = [l_max, None, None] 
                 
+                HOMING_DEBUGGING = False
+
                 # home first rail (left)
                 # the homing function alters kinematics class to think rail is at forcepos.
                 # the stepper then moves towards homepos until endstop is triggered
@@ -317,10 +324,15 @@ class FiveBar:
                 # this then sets the toolhead position to homepos 
                 # The stepper now thinks its at forcepos (eg 0)
                 # We need to move stepper L towards safe_homing_angle
-                logging.info("Fivebar moving L to safe home %s", rails[0].safe_home_angle)
-                toolhead.manual_move([rails[0].safe_home_angle, None, None], hi0.speed)
+                toolhead.flush_step_generation()
+                if HOMING_DEBUGGING:
+                    stepper_enable.motor_off()
+                else:
+                    logging.info("Fivebar moving L to safe home %s", rails[0].safe_home_angle)
+                    toolhead.manual_move([rails[0].safe_home_angle, None, None], hi0.speed)
                 
 
+                toolhead.flush_step_generation()
                 # now home R
                 logging.info("Fivebar homing R now")
                 homepos = [None, r_endstop, None]
@@ -331,10 +343,14 @@ class FiveBar:
                     forcepos = [None, r_max, None]
                 # we should be moving from positive to negative
                 homing_state.home_rails([rails[1]], forcepos, homepos)
-                logging.info("Fivebar moving R to safe home %s", rails[1].safe_home_angle)
-                toolhead.manual_move([None, rails[1].safe_home_angle, None], hi0.speed)
                 toolhead.flush_step_generation()
+                if HOMING_DEBUGGING:
+                    stepper_enable.motor_off()
+                else:
+                    logging.info("Fivebar moving R to safe home %s", rails[1].safe_home_angle)
+                    toolhead.manual_move([None, rails[1].safe_home_angle, None], hi0.speed)
 
+                toolhead.flush_step_generation()
                 self.ishoming = False
                 # restore kinematics
                 logging.info("Fivebar restoring kinematics")
@@ -345,10 +361,10 @@ class FiveBar:
                     rails[0].safe_home_angle,
                     rails[1].safe_home_angle)
                 
-                toolhead.set_position( [x, y, 0, 0], (0, 1))
+                toolhead.set_position( [x, y, old_position[2], old_position[3]], (0, 1))
                 toolhead.flush_step_generation()
                 self.homedXY = True
-                logging.info("Homed LR done")
+                logging.info("Fivebar homing LR complete")
 
             except Exception as e:
                 for stepper, prev_sk in zip(steppers, prev_sks):
